@@ -1,0 +1,21 @@
+{
+  "name": "kingest",
+  "version": "8.0.0",
+  "description": "KINGEST — Decentralized AI Investment Platform with 4 Live Data Agents",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.12.7"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.2"
+  }
+}

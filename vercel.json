@@ -1,0 +1,17 @@
+{
+  "rewrites": [
+    { "source": "/api/finnhub/:path*", "destination": "https://finnhub.io/api/v1/:path*" },
+    { "source": "/api/coingecko/:path*", "destination": "https://api.coingecko.com/api/v3/:path*" },
+    { "source": "/api/goldapi/:path*", "destination": "https://api.gold-api.com/:path*" },
+    { "source": "/api/frankfurter/:path*", "destination": "https://api.frankfurter.dev/v1/:path*" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "DENY" }
+      ]
+    }
+  ]
+}
