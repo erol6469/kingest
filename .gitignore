@@ -1,0 +1,33 @@
+node_modules/
+.DS_Store
+*.log
+.env
+
+# iOS
+ios/Pods/
+ios/build/
+ios/*.xcworkspace
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.xcuserstate
+project.xcworkspace/
+xcuserdata/
+
+# Android
+android/app/build/
+android/.gradle/
+android/build/
+*.apk
+*.aab
+
+# Metro
+.metro-health-check*
+
+# Buck
+buck-out/
+\.buckd/
+
+# CocoaPods
+/ios/Pods/
