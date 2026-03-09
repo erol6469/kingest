@@ -674,6 +674,29 @@ function WalletModal({ onClose, onConnect }) {
 // ═══════════════════════════════════════════════════════════════════════
 //  💰 MULTI-CURRENCY SYSTEM — EUR · USD · USDC · Achat · Dépôt
 // ═══════════════════════════════════════════════════════════════════════
+
+// ── Shared Font & Utility Constants ──
+const font = "'Inter', -apple-system, sans-serif";
+const mono = "'JetBrains Mono', 'SF Mono', monospace";
+const fPct = (n) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+const fNum = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : n.toFixed(0);
+const getOvernightRate = (leverage) => leverage <= 5 ? 0.00015 : leverage <= 10 ? 0.00025 : 0.00045;
+const genRevenue30d = () => Array.from({ length: 30 }, (_, i) => ({ day: `J-${29 - i}`, spreads: 800 + Math.floor(Math.random() * 600), overnight: 200 + Math.floor(Math.random() * 300), subs: 400 + Math.floor(Math.random() * 200), copy: 100 + Math.floor(Math.random() * 150), token: 50 + Math.floor(Math.random() * 100) }));
+
+// ── Shared UI Components ──
+const SectionTitle = ({ icon, title, sub }) => (
+    <div style={{ marginBottom: "28px" }}>
+        <div style={{ fontSize: "24px", fontWeight: 800, color: C.text, fontFamily: font, marginBottom: "6px" }}>{icon} {title}</div>
+        {sub && <div style={{ fontSize: "13px", color: C.textDim, fontFamily: font }}>{sub}</div>}
+    </div>
+);
+const Card = ({ children, style = {} }) => (
+    <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: "16px", padding: "20px", backdropFilter: "blur(16px)", ...style }}>{children}</div>
+);
+const Badge = ({ text, color }) => (
+    <span style={{ fontSize: "10px", fontWeight: 700, color, background: `${color}15`, border: `1px solid ${color}30`, padding: "3px 10px", borderRadius: "6px", fontFamily: font }}>{text}</span>
+);
+
 const SPREAD_TABLE = {
     stock:     { standard: 0.0015, pro: 0.0008, elite: 0.00045 },
     crypto:    { standard: 0.0025, pro: 0.0012, elite: 0.00075 },
