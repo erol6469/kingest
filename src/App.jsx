@@ -818,9 +818,6 @@ function DepositModal({ onClose, onDeposit, currentCurrency }) {
     const [step, setStep] = useState("method");
     const [method, setMethod] = useState(null);
     const [currency, setCurrency] = useState(currentCurrency || CURRENCIES[0]);
-  const [tier, setTier] = useState("free");
-  const [upgradeModal, setUpgradeModal] = useState(null);
-  const [isAdmin, setIsAdmin] = useState(false);
     const [amount, setAmount] = useState("");
     const [processing, setProcessing] = useState(false);
     const [success, setSuccess] = useState(false);
@@ -3512,6 +3509,9 @@ export default function App() {
     // Live Agent API keys
     const [finnhubKey, setFinnhubKey] = useState("d6nk53pr01qodk605ra0d6nk53pr01qodk605rag");
     const [liveMode, setLiveMode] = useState(true);
+    const [tier, setTier] = useState("free");
+    const [upgradeModal, setUpgradeModal] = useState(null);
+    const [isAdmin, setIsAdmin] = useState(false);
 
     // ── 4 Live Data Agents ──
     const topStockSyms = useMemo(() => STOCKS.slice(0, 30).map(s => s.sym), []);
@@ -3650,7 +3650,7 @@ export default function App() {
                 <div style={{ display: "flex", alignItems: "center", gap: "18px" }}>
                     <div style={{ textAlign: "right" }}>
                         <div style={{ fontSize: "10px", color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Equity</div>
-                        <div style={{ fontSize: "18px", fontWeight: 800, color: C.primary }}>{fUSD(balance + positions.reduce((s, p) => s + p.amt + p.pnl, 0))}</div>
+                        <div style={{ fontSize: "18px", fontWeight: 800, color: C.primary }}>{fUSD(balance + positions.reduce((s, p) => s + p.amt + getPnl(p), 0))}</div>
                     </div>
                     <button onClick={() => setDepositMod(true)} style={{ padding: "8px 14px", borderRadius: "10px", border: "1px solid rgba(38,166,154,0.25)", cursor: "pointer", background: "rgba(38,166,154,0.08)", color: "#26A69A", fontSize: "12px", fontWeight: 700, display: "flex", alignItems: "center", gap: "5px" }}>💰 Déposer</button>
                     <div style={{ display: "flex", gap: "2px", padding: "2px", borderRadius: "8px", background: "rgba(255,255,255,0.03)", border: "1px solid " + C.border }}>
@@ -3706,7 +3706,7 @@ export default function App() {
     page === 'referral' ? <ReferralPage /> :
     page === 'fees' ? <FeesSimulator tier={tier} /> :
     page === 'admin' ? <AdminRevenueDashboard /> :
-    page === "dashboard" && <Dashboard stocks={stocks} cryptos={cryptos} forex={forex} comms={comms} positions={positions} balance={balance} onNav={setPage} />}
+    page === "dashboard" && <Dashboard stocks={stocks} cryptos={cryptos} forex={forex} comms={comms} positions={positions.map(p => ({ ...p, pnl: getPnl(p) }))} balance={balance} onNav={setPage} />}
                         {page === "portfolio" && <Portfolio positions={positions} balance={balance} closeFn={closePo} getPnl={getPnl} />}
                         {page === "markets" && (
                             <div>
