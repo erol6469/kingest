@@ -93,9 +93,10 @@ app.use("/api/stripe/webhook", express.raw({ type: "application/json" }));
 app.use(generalLimiter);
 
 // ══════════════════════════════════════
-// AUTH ENDPOINTS
+// AUTH ENDPOINTS (persistent users on disk)
 // ══════════════════════════════════════
-const users = new Map();
+const users = new PersistentMap("users.json");
+console.log(`✅ ${users.keys().length} users loaded from disk`);
 
 app.post("/api/v1/auth/register", paymentLimiter, (req, res) => {
     try {
@@ -107,8 +108,9 @@ app.post("/api/v1/auth/register", paymentLimiter, (req, res) => {
         if (users.has(emailClean)) return res.status(409).json({ ok: false, error: "User exists" });
         const { hash, salt } = hashPin(pinStr);
         const userId = require("uuid").v4();
-        users.set(emailClean, { id: userId, email: emailClean, pinHash: hash, pinSalt: salt, createdAt: new Date().toISOString() });
+        users.set_val(emailClean, { id: userId, email: emailClean, pinHash: hash, pinSalt: salt, createdAt: new Date().toISOString() });
         const token = createToken({ sub: userId, email: emailClean });
+        logger.info(`[AUTH] New user registered: ${emailClean}`);
         res.json({ ok: true, token, userId });
     } catch (e) { res.status(500).json({ ok: false, error: "Registration failed" }); }
 });
@@ -120,11 +122,12 @@ app.post("/api/v1/auth/login", paymentLimiter, (req, res) => {
         const pinStr = pin.toString();
         if (pinStr.length !== 6 || !/^\d{6}$/.test(pinStr)) return res.status(400).json({ ok: false, error: "PIN must be exactly 6 digits" });
         const emailClean = sanitizeString(email, 100).toLowerCase();
-        const user = users.get(emailClean);
+        const user = users.get_val(emailClean);
         if (!user || !verifyPin(pinStr, user.pinHash, user.pinSalt)) {
             return res.status(401).json({ ok: false, error: "Invalid credentials" });
         }
         const token = createToken({ sub: user.id, email: emailClean });
+        logger.info(`[AUTH] User logged in: ${emailClean}`);
         res.json({ ok: true, token, userId: user.id });
     } catch (e) { res.status(500).json({ ok: false, error: "Login failed" }); }
 });

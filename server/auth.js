@@ -3,9 +3,11 @@
 // ═══════════════════════════════════════════════════════════════
 const crypto = require('crypto');
 
-// JWT Secret — MUST be set via environment variable in production
-const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
-const JWT_EXPIRY_SECONDS = 3600; // 1 hour
+// JWT Secret — stable across restarts
+// Try env var first, then fallback to a stable secret derived from a fixed seed
+// In production, ALWAYS set JWT_SECRET env var on Render
+const JWT_SECRET = process.env.JWT_SECRET || 'kingest-dev-secret-change-in-production-2024';
+const JWT_EXPIRY_SECONDS = 30 * 24 * 3600; // 30 days (mobile app needs long sessions)
 
 // Simple JWT implementation (no external dependency)
 function base64UrlEncode(str) {
