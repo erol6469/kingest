@@ -11,6 +11,7 @@ class FaceIDManager: ObservableObject {
     @Published var isChecking = true
     @Published var errorMessage: String?
     @Published var serverReady = false
+    @Published var pulseOpacity: Double = 1.0
 
     let apiBase = "https://kingest-api.onrender.com"
 
@@ -181,12 +182,17 @@ struct FaceIDLockScreen: View {
                     .tracking(-1)
 
                 if manager.isChecking {
-                    // Face ID icon with pulse animation
+                    // Face ID icon with simple opacity animation
                     VStack(spacing: 16) {
                         Image(systemName: "faceid")
                             .font(.system(size: 60))
                             .foregroundColor(.white.opacity(0.9))
-                            .symbolEffect(.pulse, options: .repeating)
+                            .opacity(manager.pulseOpacity)
+                            .onAppear {
+                                withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+                                    manager.pulseOpacity = 0.4
+                                }
+                            }
 
                         Text("Vérification Face ID...")
                             .font(.system(size: 16, weight: .medium))
@@ -260,7 +266,7 @@ struct ContentView: View {
                         faceIDManager.authenticate()
                     }
             } else {
-                WebView(serverReady: faceIDManager.serverReady)
+                WebView(serverReady: faceIDManager.serverReady, faceIDAuthenticated: faceIDManager.isAuthenticated && faceIDManager.isFaceIDEnrolled)
                     .ignoresSafeArea()
                     .statusBarHidden(false)
                     .preferredColorScheme(.dark)
@@ -280,12 +286,13 @@ struct ContentView: View {
 // ══════════════════════════════════════
 struct WebView: UIViewRepresentable {
     var serverReady: Bool
+    var faceIDAuthenticated: Bool = false
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
-        config.preferences.javaScriptEnabled = true
+        config.defaultWebpagePreferences.allowsContentJavaScript = true
 
         // Allow camera access for selfie
         if #available(iOS 14.5, *) {
@@ -312,8 +319,8 @@ struct WebView: UIViewRepresentable {
         window.__KINGEST_APPLEPAY_AVAILABLE = function() {
             return true;
         };
-        window.__KINGEST_ENROLL_FACEID = function(email) {
-            window.webkit.messageHandlers.kingestFaceID.postMessage({action: 'enroll', email: email});
+        window.__KINGEST_ENROLL_FACEID = function(email, token, userId) {
+            window.webkit.messageHandlers.kingestFaceID.postMessage({action: 'enroll', email: email, token: token || '', userId: userId || ''});
         };
         window.__KINGEST_FACEID_ENROLLED = function() {
             try {
@@ -324,9 +331,14 @@ struct WebView: UIViewRepresentable {
         let script = WKUserScript(source: bridgeJS, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         uc.addUserScript(script)
 
-        // Clear all WKWebView caches to ensure fresh JS loads
+        // Clear only HTTP caches (keep localStorage for auth tokens)
+        let cacheTypes: Set<String> = [
+            WKWebsiteDataTypeDiskCache,
+            WKWebsiteDataTypeMemoryCache,
+            WKWebsiteDataTypeOfflineWebApplicationCache
+        ]
         let dataStore = WKWebsiteDataStore.default()
-        dataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: Date.distantPast) { }
+        dataStore.removeData(ofTypes: cacheTypes, modifiedSince: Date.distantPast) { }
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.isOpaque = false
@@ -359,7 +371,9 @@ struct WebView: UIViewRepresentable {
     func updateUIView(_ uiView: WKWebView, context: Context) {}
 
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        let c = Coordinator()
+        c.faceIDAuthenticated = faceIDAuthenticated
+        return c
     }
 
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler, PKPaymentAuthorizationControllerDelegate, WKUIDelegate {
@@ -389,6 +403,7 @@ struct WebView: UIViewRepresentable {
         var timer: Timer?
         let apiBase: String = "https://kingest-api.onrender.com"
         var paymentController: PKPaymentAuthorizationController?
+        var faceIDAuthenticated: Bool = false
 
         @objc func handleRefresh(_ sender: UIRefreshControl) {
             fetchAndInject()
@@ -413,10 +428,14 @@ struct WebView: UIViewRepresentable {
 
             if action == "enroll" {
                 let email = body["email"] as? String ?? ""
+                let token = body["token"] as? String ?? ""
+                let userId = body["userId"] as? String ?? ""
                 // Save to UserDefaults so native Face ID works on next launch
                 UserDefaults.standard.set(true, forKey: "kingest_faceid_enrolled")
                 UserDefaults.standard.set(email, forKey: "kingest_user_email")
-                print("[KINGEST] Face ID enrolled for: \(email)")
+                UserDefaults.standard.set(token, forKey: "kingest_auth_token")
+                UserDefaults.standard.set(userId, forKey: "kingest_user_id")
+                print("[KINGEST] Face ID enrolled for: \(email), token saved")
             }
         }
 
@@ -542,6 +561,35 @@ struct WebView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            // If Face ID authenticated, restore saved auth token into localStorage
+            if faceIDAuthenticated {
+                let token = UserDefaults.standard.string(forKey: "kingest_auth_token") ?? ""
+                let email = UserDefaults.standard.string(forKey: "kingest_user_email") ?? ""
+                let userId = UserDefaults.standard.string(forKey: "kingest_user_id") ?? ""
+                if !token.isEmpty {
+                    let restoreJS = """
+                    try {
+                        localStorage.setItem('kingest_auth_token', '\(token)');
+                        localStorage.setItem('kingest_user_email', '\(email)');
+                        localStorage.setItem('kingest_user_id', '\(userId)');
+                        localStorage.setItem('kingest_auth_version', '2');
+                        localStorage.setItem('kingest_faceid_enrolled', 'true');
+                        console.log('[KINGEST] Auth token restored from Face ID');
+                        // Force React to pick up the token - reload the page
+                        window.location.reload();
+                    } catch(e) { console.error('[KINGEST] Failed to restore token:', e); }
+                    """
+                    webView.evaluateJavaScript(restoreJS) { _, error in
+                        if let error = error {
+                            print("[KINGEST] Error restoring token: \(error)")
+                        } else {
+                            print("[KINGEST] Token restored into localStorage after Face ID")
+                        }
+                    }
+                    faceIDAuthenticated = false // Only inject once
+                }
+            }
+
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 self.fetchAndInject()
                 self.updateApplePayAvailability()

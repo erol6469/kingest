@@ -164,9 +164,9 @@ export function LoginPage({ onAuth }) {
           if (isRegister && selfieData) {
             localStorage.setItem("kingest_selfie", selfieData);
             localStorage.setItem("kingest_faceid_enrolled", "true");
-            // Tell native bridge to enroll Face ID
+            // Tell native bridge to enroll Face ID + save token for next launch
             if (window.__KINGEST_ENROLL_FACEID) {
-              window.__KINGEST_ENROLL_FACEID(email.toLowerCase());
+              window.__KINGEST_ENROLL_FACEID(email.toLowerCase(), data.token, data.userId);
             }
           }
         } catch {}

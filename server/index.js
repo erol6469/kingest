@@ -133,6 +133,170 @@ app.get("/api/v1/auth/verify", authMiddleware, (req, res) => {
     res.json({ ok: true, user: req.user });
 });
 
+// ══════════════════════════════════════
+// TRADING API (via Alpaca)
+// ══════════════════════════════════════
+const alpaca = require("./alpaca-service");
+
+// Revenue tracking (in-memory, per session)
+const revenueLog = [];
+let totalRevenue = 0;
+
+// GET /api/v1/trading/account — Alpaca account info
+app.get("/api/v1/trading/account", authMiddleware, async (req, res) => {
+    try {
+        if (!alpaca.isConfigured()) return res.status(503).json({ ok: false, error: "Trading not configured" });
+        const account = await alpaca.getAccount();
+        res.json({ ok: true, account: {
+            buyingPower: account.buying_power,
+            cash: account.cash,
+            portfolioValue: account.portfolio_value,
+            equity: account.equity,
+            currency: account.currency,
+            status: account.status,
+        }});
+    } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// GET /api/v1/trading/quote/:symbol — Get price with Kingest spread
+app.get("/api/v1/trading/quote/:symbol", authMiddleware, async (req, res) => {
+    try {
+        if (!alpaca.isConfigured()) return res.status(503).json({ ok: false, error: "Trading not configured" });
+        const quote = await alpaca.getQuote(req.params.symbol.toUpperCase());
+        res.json({ ok: true, quote });
+    } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// POST /api/v1/trading/buy — Buy an asset
+app.post("/api/v1/trading/buy", authMiddleware, async (req, res) => {
+    try {
+        if (!alpaca.isConfigured()) return res.status(503).json({ ok: false, error: "Trading not configured" });
+        const { symbol, qty, amount, type } = req.body;
+        if (!symbol) return res.status(400).json({ ok: false, error: "Symbol required" });
+        if (!qty && !amount) return res.status(400).json({ ok: false, error: "Quantity or amount required" });
+
+        // Calculate Kingest revenue from this trade
+        let tradeAmount = amount;
+        if (!tradeAmount && qty) {
+            const quote = await alpaca.getQuote(symbol.toUpperCase());
+            tradeAmount = qty * quote.mid;
+        }
+        const kingestFee = alpaca.calculateKingestRevenue(tradeAmount || 0);
+
+        // Execute the order
+        const order = await alpaca.buyOrder(
+            symbol.toUpperCase(),
+            qty,
+            amount, // notional (dollar amount)
+            type || "stock"
+        );
+
+        // Log revenue
+        totalRevenue += kingestFee;
+        revenueLog.push({
+            timestamp: new Date().toISOString(),
+            userId: req.user.sub,
+            symbol: symbol.toUpperCase(),
+            side: "buy",
+            amount: tradeAmount,
+            kingestFee,
+            orderId: order.orderId,
+        });
+
+        res.json({
+            ok: true,
+            order,
+            kingestFee: Math.round(kingestFee * 100) / 100,
+            message: `Achat ${symbol.toUpperCase()} exécuté`,
+        });
+    } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// POST /api/v1/trading/sell — Sell an asset
+app.post("/api/v1/trading/sell", authMiddleware, async (req, res) => {
+    try {
+        if (!alpaca.isConfigured()) return res.status(503).json({ ok: false, error: "Trading not configured" });
+        const { symbol, qty, type } = req.body;
+        if (!symbol || !qty) return res.status(400).json({ ok: false, error: "Symbol and quantity required" });
+
+        // Calculate Kingest revenue
+        const quote = await alpaca.getQuote(symbol.toUpperCase());
+        const tradeAmount = qty * quote.mid;
+        const kingestFee = alpaca.calculateKingestRevenue(tradeAmount);
+
+        // Execute the sell
+        const order = await alpaca.sellOrder(symbol.toUpperCase(), qty, type || "stock");
+
+        // Log revenue
+        totalRevenue += kingestFee;
+        revenueLog.push({
+            timestamp: new Date().toISOString(),
+            userId: req.user.sub,
+            symbol: symbol.toUpperCase(),
+            side: "sell",
+            amount: tradeAmount,
+            kingestFee,
+            orderId: order.orderId,
+        });
+
+        res.json({
+            ok: true,
+            order,
+            kingestFee: Math.round(kingestFee * 100) / 100,
+            message: `Vente ${symbol.toUpperCase()} exécutée`,
+        });
+    } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// GET /api/v1/trading/portfolio — All positions
+app.get("/api/v1/trading/portfolio", authMiddleware, async (req, res) => {
+    try {
+        if (!alpaca.isConfigured()) return res.status(503).json({ ok: false, error: "Trading not configured" });
+        const positions = await alpaca.getPositions();
+        const account = await alpaca.getAccount();
+        res.json({
+            ok: true,
+            portfolio: {
+                totalValue: parseFloat(account.portfolio_value),
+                cash: parseFloat(account.cash),
+                buyingPower: parseFloat(account.buying_power),
+                positions,
+            },
+        });
+    } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// GET /api/v1/trading/orders — Order history
+app.get("/api/v1/trading/orders", authMiddleware, async (req, res) => {
+    try {
+        if (!alpaca.isConfigured()) return res.status(503).json({ ok: false, error: "Trading not configured" });
+        const orders = await alpaca.getOrders(req.query.status || "all", parseInt(req.query.limit) || 50);
+        res.json({ ok: true, orders });
+    } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// GET /api/v1/trading/search/:query — Search assets
+app.get("/api/v1/trading/search/:query", authMiddleware, async (req, res) => {
+    try {
+        if (!alpaca.isConfigured()) return res.status(503).json({ ok: false, error: "Trading not configured" });
+        const results = await alpaca.searchAssets(req.params.query);
+        res.json({ ok: true, results });
+    } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// GET /api/v1/trading/revenue — Kingest revenue dashboard (admin)
+app.get("/api/v1/trading/revenue", authMiddleware, (req, res) => {
+    res.json({
+        ok: true,
+        revenue: {
+            total: Math.round(totalRevenue * 100) / 100,
+            trades: revenueLog.length,
+            spreadRate: alpaca.KINGEST_SPREAD * 100 + "%",
+            recentTrades: revenueLog.slice(-20).reverse(),
+        },
+    });
+});
+
 const PORT = process.env.PORT || 3001;
 
 // ══════════════════════════════════════
