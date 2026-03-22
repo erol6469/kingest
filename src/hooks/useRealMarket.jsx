@@ -122,9 +122,9 @@ function useRealMarket() {
                 setError(null);
                 setDebug(dbg.join(" | ") + " | src:" + JSON.stringify(d.sources || {}));
 
-                console.log("[KINGEST] Native bridge data received:", dbg.join(" | "));
+                // [KINGEST] Native bridge data received:", dbg.join(" | "));
             } catch (e) {
-                console.error("[KINGEST] Parse error:", e);
+                // console.error("[KINGEST] Parse error:", e);
                 setError(e.message);
                 setDebug("Parse error: " + e.message);
             }
@@ -142,7 +142,7 @@ function useRealMarket() {
                 const jsonString = new TextDecoder("utf-8").decode(bytes);
                 processData(jsonString);
             } catch (e) {
-                console.error("[KINGEST] Base64 decode error:", e);
+                // console.error("[KINGEST] Base64 decode error:", e);
                 setError("Decode error: " + e.message);
                 setDebug("B64 decode error");
             }
@@ -151,10 +151,10 @@ function useRealMarket() {
         window.__KINGEST_ERROR = (msg) => {
             setError(msg);
             setDebug("Native error: " + msg);
-            console.warn("[KINGEST] Native error:", msg);
+            // console.warn("[KINGEST] Native error:", msg);
         };
 
-        console.log("[KINGEST] Native bridge registered (B64 + JSON), waiting for data...");
+        // [KINGEST] Native bridge registered (B64 + JSON), waiting for data...");
 
         return () => {
             window.__KINGEST_DATA = null;

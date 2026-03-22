@@ -22,6 +22,7 @@ const crypto = require("crypto");
 const { authMiddleware, optionalAuth, createToken, hashPin, verifyPin } = require("./auth");
 const { PersistentMap, PersistentArray } = require("./persistence");
 const { logger, requestLogger } = require("./logger");
+const { verifyTransaction, getBalance, EXPLORERS } = require("./crypto-service");
 
 const app = express();
 
@@ -1201,15 +1202,22 @@ app.get("/api/stripe/status/:id", async (req, res) => {
     }
 });
 
-// Stripe webhook handler
+// Stripe webhook handler — raw body required for signature verification
 app.post("/api/stripe/webhook", async (req, res) => {
     const sig = req.headers["stripe-signature"];
     if (!sig) return res.status(400).json({ ok: false, error: "Missing signature" });
 
+    let event;
     try {
-        // In production, verify the signature with your webhook secret
-        // For dev: skip verification if secret not set
-        const event = JSON.parse(req.body.toString());
+        const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+        if (webhookSecret) {
+            // Production: verify signature with Stripe SDK
+            event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+        } else {
+            // Dev only: parse without verification (log warning)
+            console.warn("[STRIPE WEBHOOK] No STRIPE_WEBHOOK_SECRET set — skipping signature verification (DEV ONLY)");
+            event = JSON.parse(req.body.toString());
+        }
 
         if (event.type === "payment_intent.succeeded") {
             const pi = event.data.object;
@@ -1488,10 +1496,16 @@ app.post("/api/stripe/google-pay", authMiddleware, paymentLimiter, async (req, r
 app.get("/api/paypal/config", (req, res) => {
     try {
         const enabled = !PAYPAL_CLIENT_ID.includes("REPLACE");
+        const mode = process.env.PAYPAL_MODE || "sandbox";
         res.json({
             ok: true,
             enabled,
             clientId: enabled ? PAYPAL_CLIENT_ID : null,
+            mode,
+            // SDK URL depends on mode
+            sdkBaseUrl: mode === "production"
+                ? "https://www.paypal.com/sdk/js"
+                : "https://www.sandbox.paypal.com/sdk/js",
         });
     } catch (e) {
         console.error("[PAYPAL] Config error:", e.message);
@@ -2177,8 +2191,8 @@ app.post("/api/crypto/send", authMiddleware, paymentLimiter, (req, res) => {
         // Deduct from wallet
         walletBalances[tokenUpper] = Math.max(0, currentBalance - amt);
 
-        // Generate fake TX hash
-        const txHash = "0x" + crypto.randomBytes(32).toString("hex");
+        // Simulated TX hash (no real blockchain integration yet)
+        const txHash = "0xSIM_" + crypto.randomBytes(30).toString("hex");
 
         // Record transaction
         const txId = uuidv4();
@@ -2209,6 +2223,8 @@ app.post("/api/crypto/send", authMiddleware, paymentLimiter, (req, res) => {
             network: networkLower,
             fee: networkFee,
             status: "completed",
+            simulation: true,
+            warning: "Mode simulation — aucune transaction blockchain réelle",
         });
     } catch (e) {
         console.error("[CRYPTO-SEND] Error:", e.message);
@@ -2257,6 +2273,52 @@ app.post("/api/crypto/deposit-notify", paymentLimiter, (req, res) => {
         console.error("[CRYPTO-DEPOSIT] Error:", e.message);
         res.status(500).json({ ok: false, error: "Deposit notification failed" });
     }
+});
+
+// ══════════════════════════════════════
+// REAL BLOCKCHAIN VERIFICATION
+// ══════════════════════════════════════
+
+// GET /api/crypto/verify-tx - Verify a real blockchain transaction
+app.get("/api/crypto/verify-tx", async (req, res) => {
+    try {
+        const { txHash, network } = req.query;
+        if (!txHash || !network) {
+            return res.status(400).json({ ok: false, error: "txHash and network required" });
+        }
+
+        const result = await verifyTransaction(txHash, network);
+        res.json({ ok: true, ...result });
+    } catch (e) {
+        res.status(500).json({ ok: false, error: "Verification failed: " + e.message });
+    }
+});
+
+// GET /api/crypto/balance - Check real on-chain balance of an address
+app.get("/api/crypto/balance", async (req, res) => {
+    try {
+        const { address, network } = req.query;
+        if (!address || !network) {
+            return res.status(400).json({ ok: false, error: "address and network required" });
+        }
+
+        const result = await getBalance(address, network);
+        res.json({ ok: true, ...result });
+    } catch (e) {
+        res.status(500).json({ ok: false, error: "Balance check failed: " + e.message });
+    }
+});
+
+// GET /api/crypto/networks - List supported networks with explorer URLs
+app.get("/api/crypto/networks", (req, res) => {
+    const networks = Object.entries(EXPLORERS).map(([name, info]) => ({
+        name,
+        explorerUrl: info.txUrl.replace("/tx/", ""),
+        type: "evm",
+    }));
+    networks.push({ name: "bitcoin", explorerUrl: "https://blockstream.info", type: "utxo" });
+    networks.push({ name: "tron", explorerUrl: "https://tronscan.org", type: "tron" });
+    res.json({ ok: true, networks });
 });
 
 // GET /api/sepa/config - Returns SEPA configuration
@@ -2505,30 +2567,39 @@ app.get("/api/config", (req, res) => {
         const stripeEnabled = !!stripe && !STRIPE_SECRET_KEY.includes("REPLACE");
         const paypalEnabled = !PAYPAL_CLIENT_ID.includes("REPLACE");
 
+        const paypalMode = process.env.PAYPAL_MODE || "sandbox";
+        const gpayMode = process.env.GOOGLE_PAY_MODE || "TEST";
+
         res.json({
             ok: true,
             payments: {
                 stripe: {
                     enabled: stripeEnabled,
                     publishableKey: stripeEnabled ? STRIPE_PUBLISHABLE_KEY : null,
+                    mode: STRIPE_SECRET_KEY.startsWith("sk_live") ? "production" : "test",
                 },
                 paypal: {
                     enabled: paypalEnabled,
                     clientId: paypalEnabled ? PAYPAL_CLIENT_ID : null,
+                    mode: paypalMode,
+                    baseUrl: paypalMode === "production" ? "https://api-m.paypal.com" : "https://api-m.sandbox.paypal.com",
                 },
                 applePay: {
                     enabled: !!stripe && !STRIPE_SECRET_KEY.includes("REPLACE"),
                 },
                 googlePay: {
                     enabled: true,
+                    environment: gpayMode,
                 },
                 sepa: {
                     enabled: true,
                 },
                 crypto: {
                     enabled: true,
+                    mode: "simulation",
                 },
             },
+            environment: process.env.NODE_ENV || "development",
         });
     } catch (e) {
         console.error("[CONFIG] Error:", e.message);
@@ -2558,12 +2629,23 @@ app.use("/api/:path", (req, res) => {
     res.status(404).json({ ok: false, error: "Endpoint not found", version: "v1" });
 });
 
+// Health check endpoint (required for cloud hosting)
+app.get("/health", (req, res) => {
+    res.json({ ok: true, uptime: process.uptime(), timestamp: new Date().toISOString() });
+});
+
 // Global error handler
 app.use((err, req, res, next) => {
     logger.error("Unhandled error", { error: err.message, stack: err.stack, url: req.originalUrl });
     res.status(500).json({ ok: false, error: "Internal server error" });
 });
 
-app.listen(PORT, () => {
-    console.log(`[KINGEST] Market proxy running on port ${PORT}`);
+// Graceful shutdown
+const server = app.listen(PORT, "0.0.0.0", () => {
+    console.log(`[KINGEST] Server running on port ${PORT} (${process.env.NODE_ENV || "development"})`);
+});
+
+process.on("SIGTERM", () => {
+    console.log("[KINGEST] SIGTERM received, shutting down gracefully...");
+    server.close(() => process.exit(0));
 });

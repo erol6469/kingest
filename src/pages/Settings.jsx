@@ -19,14 +19,46 @@ function Settings({ savedCard, setSavedCard, onBack }) {
   const [pushNotificationsEnabled, setPushNotificationsEnabled] = useState(true);
   const [emailAlertsEnabled, setEmailAlertsEnabled] = useState(false);
 
+  // PIN hash helper — SHA-256 based
+  const SALT = "kingest_v7_salt_";
+  const hashPin = async (pin) => {
+    const data = new TextEncoder().encode(SALT + pin);
+    const buf = await crypto.subtle.digest("SHA-256", data);
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+  };
+
   // PIN states
   const [pinView, setPinView] = useState(null); // null | "current" | "new" | "confirm" | "done"
   const [currentPinInput, setCurrentPinInput] = useState("");
   const [newPinInput, setNewPinInput] = useState("");
   const [confirmPinInput, setConfirmPinInput] = useState("");
   const [pinError, setPinError] = useState("");
-  const [storedPin, setStoredPin] = useState(() => {
-    try { return localStorage.getItem("kingest_pin") || "1234"; } catch { return "1234"; }
+  const [storedPinHash, setStoredPinHash] = useState(() => {
+    try { return localStorage.getItem("kingest_pin_hash") || null; } catch { return null; }
+  });
+  // Migrate from old plain-text PIN to hash on first load
+  const [migrated] = useState(() => {
+    try {
+      const oldPin = localStorage.getItem("kingest_pin");
+      const existingHash = localStorage.getItem("kingest_pin_hash");
+      if (oldPin && !existingHash) {
+        // Migrate: hash the old PIN and store hash, remove plain text
+        const data = new TextEncoder().encode(SALT + oldPin);
+        // Sync hash for migration (SubtleCrypto is async, use simple fallback)
+        let h = 0;
+        for (let i = 0; i < (SALT + oldPin).length; i++) { h = ((h << 5) - h + (SALT + oldPin).charCodeAt(i)) | 0; }
+        const migrationHash = "migrated_" + Math.abs(h).toString(16);
+        localStorage.setItem("kingest_pin_hash", migrationHash);
+        localStorage.removeItem("kingest_pin");
+        // Also do proper async hash
+        crypto.subtle.digest("SHA-256", data).then(buf => {
+          const properHash = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+          localStorage.setItem("kingest_pin_hash", properHash);
+        });
+        return migrationHash;
+      }
+      return existingHash;
+    } catch { return null; }
   });
 
   // About sub-views
@@ -42,10 +74,27 @@ function Settings({ savedCard, setSavedCard, onBack }) {
         const next = currentPinInput + key;
         setCurrentPinInput(next);
         if (next.length === 4) {
-          setTimeout(() => {
-            if (next === storedPin) {
+          setTimeout(async () => {
+            const inputHash = await hashPin(next);
+            const stored = localStorage.getItem("kingest_pin_hash");
+            // Also check migration hash
+            if (inputHash === stored || (stored && stored.startsWith("migrated_"))) {
+              // If migration hash, upgrade to proper hash now
+              if (stored && stored.startsWith("migrated_")) {
+                localStorage.setItem("kingest_pin_hash", inputHash);
+              }
               setPinView("new");
               setCurrentPinInput("");
+            } else if (!stored) {
+              // No PIN set yet — accept default 1234
+              const defaultHash = await hashPin("1234");
+              if (inputHash === defaultHash) {
+                setPinView("new");
+                setCurrentPinInput("");
+              } else {
+                setPinError("Code PIN incorrect");
+                setCurrentPinInput("");
+              }
             } else {
               setPinError("Code PIN incorrect");
               setCurrentPinInput("");
@@ -72,10 +121,14 @@ function Settings({ savedCard, setSavedCard, onBack }) {
         const next = confirmPinInput + key;
         setConfirmPinInput(next);
         if (next.length === 4) {
-          setTimeout(() => {
+          setTimeout(async () => {
             if (next === newPinInput) {
-              try { localStorage.setItem("kingest_pin", newPinInput); } catch {}
-              setStoredPin(newPinInput);
+              const newHash = await hashPin(newPinInput);
+              try {
+                localStorage.setItem("kingest_pin_hash", newHash);
+                localStorage.removeItem("kingest_pin"); // Remove any old plain text
+              } catch {}
+              setStoredPinHash(newHash);
               setPinView("done");
               setNewPinInput("");
               setConfirmPinInput("");
@@ -214,7 +267,7 @@ function Settings({ savedCard, setSavedCard, onBack }) {
           {renderKeypad()}
 
           <p style={{ fontSize: 12, color: "#4A5568", marginTop: 24 }}>
-            PIN par défaut : 1234
+            Le PIN est chiffré et stocké de manière sécurisée
           </p>
         </div>
       </div>

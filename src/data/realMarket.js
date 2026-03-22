@@ -8,7 +8,7 @@
 import { API_BASE } from "../config.js";
 
 async function fetchAllMarkets() {
-    console.log("[KINGEST] Fetching from backend:", API_BASE);
+    // Debug logging removed for production
 
     const res = await fetch(`${API_BASE}/api/market/snapshot`, {
         method: "GET",
@@ -20,13 +20,7 @@ async function fetchAllMarkets() {
 
     if (!data.ok) throw new Error("Backend error: " + (data.error || "unknown"));
 
-    console.log("[KINGEST] Backend response:",
-        "crypto:", data.crypto?.length,
-        "forex:", data.forex?.length,
-        "stocks:", data.stocks?.length,
-        "comms:", data.commodities?.length,
-        "sources:", JSON.stringify(data.sources)
-    );
+    // Debug logging removed for production
 
     // Transform backend format → app format
     return {

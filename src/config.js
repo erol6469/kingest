@@ -11,10 +11,12 @@ const ENV = {
 // API Base URL — configurable par environnement
 // En production : HTTPS obligatoire vers le vrai domaine
 // En dev : permet le HTTP local
+// In iOS WKWebView, all requests go through the native bridge (Swift)
+// so API_BASE is only used as fallback for direct fetch() calls
 const API_BASES = {
-  development: 'http://localhost:3001',
+  development: 'http://192.168.1.58:3001',
   staging: 'https://staging-api.kingest.app',
-  production: 'https://api.kingest.app',
+  production: 'https://kingest-api.onrender.com',
 };
 
 export const API_BASE = API_BASES[ENV.MODE] || API_BASES.production;

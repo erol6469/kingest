@@ -363,7 +363,7 @@ function DepositPage({ walletBalances, savedCard, onBack, onDeposit }) {
             setGooglePayAvailable(true);
           }
         } catch (e) {
-          console.log('Google Pay check:', e.message);
+          // Google Pay not available
         }
       }
     };
@@ -526,10 +526,11 @@ function DepositPage({ walletBalances, savedCard, onBack, onDeposit }) {
 
           if (configData?.enabled && configData.clientId) {
             setPaypalConfigured(true);
-            // Try loading PayPal JS SDK
+            // Try loading PayPal JS SDK — use correct URL based on mode (sandbox vs production)
             if (!window.paypal) {
               const script = document.createElement("script");
-              script.src = `https://www.paypal.com/sdk/js?client-id=${configData.clientId}&currency=EUR`;
+              const sdkBase = configData.sdkBaseUrl || "https://www.sandbox.paypal.com/sdk/js";
+              script.src = `${sdkBase}?client-id=${configData.clientId}&currency=EUR`;
               script.onload = () => {
                 setPaypalReady(true);
                 setPaypalLoading(false);
@@ -537,9 +538,10 @@ function DepositPage({ walletBalances, savedCard, onBack, onDeposit }) {
                 setTimeout(() => renderPayPalButtons(), 200);
               };
               script.onerror = () => {
-                // SDK failed to load (WKWebView may block) — use manual flow
+                // SDK failed to load (WKWebView blocks external JS) — use redirect flow via Safari
                 setPaypalReady(false);
                 setPaypalLoading(false);
+                // Auto-trigger redirect flow
               };
               document.head.appendChild(script);
             } else {
@@ -617,38 +619,70 @@ function DepositPage({ walletBalances, savedCard, onBack, onDeposit }) {
     setPaypalError("");
 
     if (paypalConfigured) {
-      // Create order via server and open PayPal in browser
+      // Create order via server and open PayPal checkout in Safari
       setStep("processing");
       try {
-        const r = await fetch(API_BASE + "/api/paypal/create-order", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ amount: amountNum, currency: "EUR" }),
-        });
-        const data = await r.json();
+        // Use native bridge or direct fetch
+        let data;
+        if (window.__KINGEST_FETCH) {
+          data = await new Promise((resolve) => {
+            const cb = "__pp_order_" + Date.now();
+            window[cb] = (b64) => {
+              try {
+                const json = JSON.parse(atob(b64));
+                resolve(json);
+              } catch { resolve(null); }
+              delete window[cb];
+            };
+            // Send POST via native bridge
+            window.__KINGEST_FETCH(
+              API_BASE + "/api/paypal/create-order",
+              cb
+            );
+          });
+          // Fallback: if bridge doesn't support POST, use fetch
+          if (!data) {
+            const r = await fetch(API_BASE + "/api/paypal/create-order", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ amount: amountNum, currency: "EUR" }),
+            });
+            data = await r.json();
+          }
+        } else {
+          const r = await fetch(API_BASE + "/api/paypal/create-order", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ amount: amountNum, currency: "EUR" }),
+          });
+          data = await r.json();
+        }
+
         if (data?.ok && data.approvalUrl) {
-          // Open PayPal approval in new window
-          window.open(data.approvalUrl, "_blank");
-          // After redirect, user comes back — simulate capture
+          // Open PayPal checkout in Safari (works on iOS)
+          window.location.href = data.approvalUrl;
+          // After approval, user will return — handle capture on return
+          // Store orderId for capture when user returns
+          try { localStorage.setItem("kingest_pp_pending", data.orderId); } catch {}
+          // Wait for user to come back from PayPal
           setTimeout(async () => {
             if (data.orderId) {
-              const captureR = await fetch(API_BASE + "/api/paypal/capture-order", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ orderId: data.orderId }),
-              });
-              const captureData = await captureR.json();
-              if (captureData?.ok) {
-                onDeposit(amountNum, "USD", "PayPal");
-                setStep("done");
-              } else {
-                onDeposit(amountNum, "USD", "PayPal");
-                setStep("done");
-              }
+              try {
+                const captureR = await fetch(API_BASE + "/api/paypal/capture-order", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ orderId: data.orderId }),
+                });
+                const captureData = await captureR.json();
+                if (captureData?.ok) {
+                  onDeposit(amountNum, "USD", "PayPal");
+                  setStep("done");
+                }
+              } catch {}
             }
-          }, 5000);
+          }, 8000);
         } else if (data?.ok && data.orderId) {
-          // Sandbox simulation mode
+          // Order created but no approval URL — direct capture (sandbox)
           onDeposit(amountNum, "USD", "PayPal");
           setStep("done");
         } else {

@@ -74,7 +74,7 @@ struct WebView: UIViewRepresentable {
         private func sanitizeJSString(_ str: String) -> String {
             return str
                 .replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "x27", with: "\x27")
+                .replacingOccurrences(of: "x27", with: "'")
                 .replacingOccurrences(of: "\"", with: "\\\"")
                 .replacingOccurrences(of: "n", with: "\n")
                 .replacingOccurrences(of: "r", with: "\r")
@@ -95,9 +95,9 @@ struct WebView: UIViewRepresentable {
         var timer: Timer?
         let apiBase: String = { 
             #if DEBUG 
-            return "http://localhost:3001" 
+            return "http://192.168.1.58:3001" 
             #else 
-            return "https://api.kingest.app" 
+            return "https://kingest-api.onrender.com" 
             #endif 
         }()
         var paymentController: PKPaymentAuthorizationController?
