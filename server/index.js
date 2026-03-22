@@ -101,9 +101,11 @@ app.post("/api/v1/auth/register", paymentLimiter, (req, res) => {
     try {
         const { email, pin } = req.body;
         if (!email || !pin) return res.status(400).json({ ok: false, error: "Email and PIN required" });
+        const pinStr = pin.toString();
+        if (pinStr.length !== 6 || !/^\d{6}$/.test(pinStr)) return res.status(400).json({ ok: false, error: "PIN must be exactly 6 digits" });
         const emailClean = sanitizeString(email, 100).toLowerCase();
         if (users.has(emailClean)) return res.status(409).json({ ok: false, error: "User exists" });
-        const { hash, salt } = hashPin(pin.toString());
+        const { hash, salt } = hashPin(pinStr);
         const userId = require("uuid").v4();
         users.set(emailClean, { id: userId, email: emailClean, pinHash: hash, pinSalt: salt, createdAt: new Date().toISOString() });
         const token = createToken({ sub: userId, email: emailClean });
@@ -115,9 +117,11 @@ app.post("/api/v1/auth/login", paymentLimiter, (req, res) => {
     try {
         const { email, pin } = req.body;
         if (!email || !pin) return res.status(400).json({ ok: false, error: "Email and PIN required" });
+        const pinStr = pin.toString();
+        if (pinStr.length !== 6 || !/^\d{6}$/.test(pinStr)) return res.status(400).json({ ok: false, error: "PIN must be exactly 6 digits" });
         const emailClean = sanitizeString(email, 100).toLowerCase();
         const user = users.get(emailClean);
-        if (!user || !verifyPin(pin.toString(), user.pinHash, user.pinSalt)) {
+        if (!user || !verifyPin(pinStr, user.pinHash, user.pinSalt)) {
             return res.status(401).json({ ok: false, error: "Invalid credentials" });
         }
         const token = createToken({ sub: user.id, email: emailClean });

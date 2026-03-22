@@ -34,11 +34,49 @@ const TABS = {
 export default function App() {
     // ── Auth state ──
     const [authToken, setAuthToken] = useState(() => {
-        try { return localStorage.getItem("kingest_auth_token") || null; } catch { return null; }
+        try {
+            // Force re-auth on new app version (bump this number to force logout)
+            const AUTH_VERSION = "2";
+            const savedVersion = localStorage.getItem("kingest_auth_version");
+            if (savedVersion !== AUTH_VERSION) {
+                localStorage.removeItem("kingest_auth_token");
+                localStorage.removeItem("kingest_user_email");
+                localStorage.removeItem("kingest_user_id");
+                localStorage.setItem("kingest_auth_version", AUTH_VERSION);
+                return null;
+            }
+            const token = localStorage.getItem("kingest_auth_token");
+            if (!token) return null;
+            const parts = token.split(".");
+            if (parts.length !== 3) { localStorage.removeItem("kingest_auth_token"); return null; }
+            try {
+                const payload = JSON.parse(atob(parts[1]));
+                if (payload.exp && payload.exp < Date.now() / 1000) {
+                    localStorage.removeItem("kingest_auth_token");
+                    return null;
+                }
+            } catch { localStorage.removeItem("kingest_auth_token"); return null; }
+            return token;
+        } catch { return null; }
     });
     const [userEmail, setUserEmail] = useState(() => {
         try { return localStorage.getItem("kingest_user_email") || ""; } catch { return ""; }
     });
+
+    // Verify token with server on startup
+    useEffect(() => {
+        if (!authToken) return;
+        fetch(API_BASE + "/api/v1/auth/verify", {
+            headers: { Authorization: "Bearer " + authToken },
+        }).then(r => r.json()).then(d => {
+            if (!d.ok) {
+                setAuthToken(null);
+                try { localStorage.removeItem("kingest_auth_token"); } catch {}
+            }
+        }).catch(() => {
+            // Server might be waking up — don't log out yet
+        });
+    }, []);
 
     const handleAuth = (token, email) => {
         setAuthToken(token);
@@ -55,13 +93,8 @@ export default function App() {
         } catch {}
     };
 
-    // ── Show login if not authenticated ──
-    if (!authToken) {
-        return <LoginPage onAuth={handleAuth} />;
-    }
-
     // Real market data ONLY — no simulation
-    const { stocks, cryptos, forex, comms, indices, exchanges, isLive, lastUpdate, error: marketError, debug: marketDebug, loading } = useRealMarket(30000);
+    const { stocks, cryptos, forex, comms, indices, exchanges, isLive, lastUpdate, error: marketError, debug: marketDebug, loading } = useRealMarket();
 
     const DATA = { stocks, cryptos, forex, comms, indices };
 
@@ -180,6 +213,11 @@ export default function App() {
         }
         return d;
     }, [tab, search, stocks, cryptos, forex, comms, indices]);
+
+    // ── Show login if not authenticated (AFTER ALL hooks) ──
+    if (!authToken) {
+        return <LoginPage onAuth={handleAuth} />;
+    }
 
     // ── Navigation handlers ──
     const openAsset = (sym, type) => {

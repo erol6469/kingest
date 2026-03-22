@@ -69,5 +69,9 @@
 	<false/>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Kingest utilise Face ID pour vous connecter rapidement et en toute sécurité.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Kingest utilise la caméra pour prendre un selfie lors de l'inscription et activer Face ID.</string>
 </dict>
 </plist>

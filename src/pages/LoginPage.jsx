@@ -1,426 +1,442 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { API_BASE } from "../config";
 
-// ═══════════════════════════════════════════════════════════════
-//  KINGEST — Login Page (style Gestia)
-//  Gradient + Social login + Email/PIN
-//  Wakes up Render server in background
-// ═══════════════════════════════════════════════════════════════
+// ── Registration steps ──
+const STEP_FORM = 0;
+const STEP_SELFIE = 1;
+const STEP_PROCESSING = 2;
 
 export function LoginPage({ onAuth }) {
-  const [mode, setMode] = useState("social"); // social | email
+  const [isRegister, setIsRegister] = useState(false);
   const [email, setEmail] = useState("");
   const [pin, setPin] = useState("");
   const [confirmPin, setConfirmPin] = useState("");
-  const [isRegister, setIsRegister] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [serverReady, setServerReady] = useState(false);
-  const serverPinged = useRef(false);
+  const [step, setStep] = useState(STEP_FORM);
+  const [selfieData, setSelfieData] = useState(null);
+  const [cameraActive, setCameraActive] = useState(false);
+  const pinged = useRef(false);
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
 
-  // ── Wake up the Render server immediately ──
+  // Wake up server in background
   useEffect(() => {
-    if (serverPinged.current) return;
-    serverPinged.current = true;
-    const wakeUp = async () => {
-      try {
-        const r = await fetch(API_BASE + "/health", { signal: AbortSignal.timeout(60000) });
-        if (r.ok) setServerReady(true);
-      } catch {
-        setTimeout(async () => {
-          try {
-            const r2 = await fetch(API_BASE + "/health", { signal: AbortSignal.timeout(60000) });
-            if (r2.ok) setServerReady(true);
-          } catch {}
+    if (pinged.current) return;
+    pinged.current = true;
+    fetch(API_BASE + "/health", { signal: AbortSignal.timeout(60000) })
+      .then(r => { if (r.ok) setServerReady(true); })
+      .catch(() => {
+        setTimeout(() => {
+          fetch(API_BASE + "/health", { signal: AbortSignal.timeout(60000) })
+            .then(r => { if (r.ok) setServerReady(true); })
+            .catch(() => {});
         }, 5000);
+      });
+  }, []);
+
+  // Cleanup camera on unmount
+  useEffect(() => {
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
       }
     };
-    wakeUp();
   }, []);
 
-  // Also via native bridge
-  useEffect(() => {
-    if (window.__KINGEST_FETCH) {
-      const cb = "__wake_" + Date.now();
-      window[cb] = () => { setServerReady(true); delete window[cb]; };
-      window.__KINGEST_FETCH(API_BASE + "/health", cb);
-    }
-  }, []);
-
-  const doAuth = async (endpoint, body) => {
-    let data;
+  const startCamera = useCallback(async () => {
     try {
-      const r = await fetch(API_BASE + endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 480 }, height: { ideal: 480 } },
+        audio: false,
       });
-      data = await r.json();
-    } catch (e) {
-      throw new Error(!serverReady ? "Serveur en démarrage... Réessayez" : "Erreur réseau");
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play();
+      }
+      setCameraActive(true);
+    } catch (err) {
+      console.error("Camera error:", err);
+      setError("Impossible d'accéder à la caméra");
+      setStep(STEP_FORM);
     }
-    if (!data?.ok) throw new Error(data?.error || "Échec");
-    return data;
-  };
+  }, []);
 
-  // ── Email/PIN login ──
-  const handleEmailAuth = async () => {
+  const takeSelfie = useCallback(() => {
+    if (!videoRef.current || !canvasRef.current) return;
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const size = Math.min(video.videoWidth, video.videoHeight);
+    canvas.width = 300;
+    canvas.height = 300;
+    const ctx = canvas.getContext("2d");
+    // Crop center square and mirror
+    const sx = (video.videoWidth - size) / 2;
+    const sy = (video.videoHeight - size) / 2;
+    ctx.save();
+    ctx.translate(300, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, sx, sy, size, size, 0, 0, 300, 300);
+    ctx.restore();
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
+    setSelfieData(dataUrl);
+    // Stop camera
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+    }
+    setCameraActive(false);
+  }, []);
+
+  const retakeSelfie = useCallback(() => {
+    setSelfieData(null);
+    startCamera();
+  }, [startCamera]);
+
+  // When entering selfie step, start camera
+  useEffect(() => {
+    if (step === STEP_SELFIE && !selfieData) {
+      startCamera();
+    }
+  }, [step, selfieData, startCamera]);
+
+  const handleFormSubmit = () => {
     setError("");
     if (!email || !email.includes("@")) { setError("Email invalide"); return; }
-    if (!pin || pin.length < 4) { setError("PIN: 4 chiffres minimum"); return; }
+    if (!pin || pin.length !== 6) { setError("PIN : exactement 6 chiffres"); return; }
     if (isRegister && pin !== confirmPin) { setError("Les PINs ne correspondent pas"); return; }
 
+    if (isRegister) {
+      // Go to selfie step for registration
+      setStep(STEP_SELFIE);
+    } else {
+      // Direct login
+      doAuth();
+    }
+  };
+
+  const handleSelfieConfirm = () => {
+    if (!selfieData) { setError("Prenez un selfie d'abord"); return; }
+    doAuth();
+  };
+
+  const doAuth = async () => {
     setLoading(true);
+    setError("");
+    if (isRegister) setStep(STEP_PROCESSING);
     try {
       const endpoint = isRegister ? "/api/v1/auth/register" : "/api/v1/auth/login";
-      const data = await doAuth(endpoint, { email, pin });
-      if (data.token) {
+      let data;
+
+      // Use native bridge POST if available (WKWebView)
+      if (window.__KINGEST_POST) {
+        data = await new Promise((resolve) => {
+          const cb = "__auth_" + Date.now();
+          window[cb] = (b64) => {
+            try { resolve(JSON.parse(atob(b64))); } catch { resolve(null); }
+            delete window[cb];
+          };
+          window.__KINGEST_POST(API_BASE + endpoint, JSON.stringify({ email, pin }), cb);
+          setTimeout(() => { if (window[cb]) { delete window[cb]; resolve(null); } }, 15000);
+        });
+      }
+
+      // Fallback to direct fetch
+      if (!data) {
+        const r = await fetch(API_BASE + endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, pin }),
+        });
+        data = await r.json();
+      }
+
+      if (data?.ok && data.token) {
         try {
           localStorage.setItem("kingest_auth_token", data.token);
           localStorage.setItem("kingest_user_email", email.toLowerCase());
           localStorage.setItem("kingest_user_id", data.userId);
+          localStorage.setItem("kingest_auth_version", "2");
+          // Save selfie + Face ID enrollment flag
+          if (isRegister && selfieData) {
+            localStorage.setItem("kingest_selfie", selfieData);
+            localStorage.setItem("kingest_faceid_enrolled", "true");
+            // Tell native bridge to enroll Face ID
+            if (window.__KINGEST_ENROLL_FACEID) {
+              window.__KINGEST_ENROLL_FACEID(email.toLowerCase());
+            }
+          }
         } catch {}
         onAuth(data.token, email.toLowerCase());
+      } else {
+        setStep(STEP_FORM);
+        if (data?.error?.includes("Invalid")) setError("Email ou PIN incorrect");
+        else if (data?.error?.includes("exists")) { setError("Ce compte existe déjà"); setIsRegister(false); }
+        else if (data?.error?.includes("6 digits")) setError("Le PIN doit faire exactement 6 chiffres");
+        else setError(data?.error || "Erreur");
       }
     } catch (e) {
-      if (e.message?.includes("Invalid")) setError("Email ou PIN incorrect");
-      else if (e.message?.includes("exists")) { setError("Compte existant — connectez-vous"); setIsRegister(false); }
-      else setError(e.message);
+      setStep(STEP_FORM);
+      setError(serverReady ? "Erreur réseau" : "Serveur en démarrage... Réessayez dans 10s");
     }
     setLoading(false);
   };
 
-  // ── Google Sign-In (opens OAuth popup) ──
-  const handleGoogleSignIn = () => {
-    setError("");
-    // For WKWebView: open Google OAuth in Safari
-    // For now, switch to email mode as fallback
-    setMode("email");
-    setError("Google Sign-In bientôt disponible. Utilisez Email + PIN.");
-  };
+  // ═══ RENDER ═══
 
-  // ── Apple Sign-In (native bridge) ──
-  const handleAppleSignIn = () => {
-    setError("");
-    if (window.__KINGEST_APPLE_AUTH) {
-      setLoading(true);
-      window.__KINGEST_APPLE_AUTH((result) => {
-        if (result?.token) {
-          onAuth(result.token, result.email || "");
-        } else {
-          setError("Connexion Apple annulée");
-        }
-        setLoading(false);
-      });
-    } else {
-      setMode("email");
-      setError("Apple Sign-In bientôt disponible. Utilisez Email + PIN.");
-    }
-  };
-
-  // ── Social buttons view ──
-  if (mode === "social") {
+  // Step: Selfie capture
+  if (step === STEP_SELFIE) {
     return (
-      <div style={styles.container}>
-        <div style={styles.content}>
-          {/* Logo + Title */}
-          <div style={styles.header}>
-            <div style={styles.logoCircle}>
-              <svg width="72" height="72" viewBox="0 0 72 72">
-                <defs>
-                  <linearGradient id="kLogo" x1="0" y1="0" x2="1" y2="1">
-                    <stop offset="0%" stopColor="rgba(255,255,255,0.25)" />
-                    <stop offset="100%" stopColor="rgba(255,255,255,0.1)" />
-                  </linearGradient>
-                </defs>
-                <circle cx="36" cy="36" r="34" fill="url(#kLogo)" stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
-                <text x="36" y="46" textAnchor="middle" fill="#fff" fontSize="32" fontWeight="800" fontFamily="system-ui">K</text>
-              </svg>
-            </div>
-            <h1 style={styles.title}>Kingest</h1>
-            <p style={styles.subtitle}>Investissement intelligent par IA</p>
+      <div style={s.container}>
+        <div style={s.content}>
+          <div style={s.header}>
+            <h1 style={{ ...s.title, fontSize: 28 }}>Reconnaissance faciale</h1>
+            <p style={s.subtitle}>Prenez un selfie pour activer Face ID</p>
           </div>
 
-          {/* Buttons */}
-          <div style={styles.buttonContainer}>
-            {/* Apple */}
-            <button style={styles.appleBtn} onClick={handleAppleSignIn} disabled={loading}>
-              {loading ? <span style={styles.spinnerWhite}>⏳</span> : (
+          <div style={s.selfieCard}>
+            <div style={s.selfieFrame}>
+              {!selfieData ? (
                 <>
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="#fff">
-                    <path d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/>
-                  </svg>
-                  <span>Continuer avec Apple</span>
+                  <video
+                    ref={videoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    style={s.video}
+                  />
+                  <div style={s.selfieOverlay}>
+                    <svg viewBox="0 0 200 200" width="100%" height="100%" style={{ position: "absolute", inset: 0 }}>
+                      <defs>
+                        <mask id="faceMask">
+                          <rect width="200" height="200" fill="white" />
+                          <ellipse cx="100" cy="95" rx="65" ry="80" fill="black" />
+                        </mask>
+                      </defs>
+                      <rect width="200" height="200" fill="rgba(0,0,0,0.5)" mask="url(#faceMask)" />
+                      <ellipse cx="100" cy="95" rx="65" ry="80" fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth="2" strokeDasharray="8,4" />
+                    </svg>
+                  </div>
                 </>
+              ) : (
+                <img src={selfieData} alt="Selfie" style={s.selfieImg} />
               )}
-            </button>
-
-            {/* Google */}
-            <button style={styles.googleBtn} onClick={handleGoogleSignIn} disabled={loading}>
-              <svg width="22" height="22" viewBox="0 0 24 24">
-                <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
-                <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-                <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
-                <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-              </svg>
-              <span>Continuer avec Google</span>
-            </button>
-
-            {/* Divider */}
-            <div style={styles.divider}>
-              <div style={styles.dividerLine} />
-              <span style={styles.dividerText}>ou</span>
-              <div style={styles.dividerLine} />
             </div>
+            <canvas ref={canvasRef} style={{ display: "none" }} />
 
-            {/* Email button */}
-            <button style={styles.emailBtn} onClick={() => setMode("email")}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
-              </svg>
-              <span>Continuer avec Email</span>
-            </button>
+            {!selfieData ? (
+              <button
+                style={{ ...s.btn, background: "rgba(255,255,255,0.25)", marginTop: 16 }}
+                onClick={takeSelfie}
+                disabled={!cameraActive}
+              >
+                {cameraActive ? "Prendre la photo" : "Chargement caméra..."}
+              </button>
+            ) : (
+              <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+                <button style={{ ...s.btn, flex: 1, background: "rgba(255,255,255,0.1)" }} onClick={retakeSelfie}>
+                  Reprendre
+                </button>
+                <button style={{ ...s.btn, flex: 1, background: "rgba(76,175,80,0.4)" }} onClick={handleSelfieConfirm}>
+                  Confirmer
+                </button>
+              </div>
+            )}
+
+            {error && <div style={s.error}>{error}</div>}
           </div>
 
-          {error && <div style={styles.error}>{error}</div>}
-
-          {/* Footer */}
-          <p style={styles.footer}>
-            En continuant, vous acceptez nos conditions d'utilisation
-          </p>
-
-          {/* Server status */}
-          <div style={styles.serverStatus}>
-            <div style={{ ...styles.statusDot, background: serverReady ? "#4CAF50" : "#FF9500" }} />
-            <span style={styles.statusLabel}>{serverReady ? "Connecté" : "Connexion..."}</span>
-          </div>
+          <button
+            style={{ ...s.backBtn }}
+            onClick={() => { setStep(STEP_FORM); setSelfieData(null); if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; } setCameraActive(false); }}
+          >
+            Retour
+          </button>
         </div>
       </div>
     );
   }
 
-  // ── Email/PIN form view ──
-  return (
-    <div style={styles.container}>
-      <div style={styles.content}>
-        {/* Back button */}
-        <button style={styles.backBtn} onClick={() => { setMode("social"); setError(""); }}>
-          ← Retour
-        </button>
+  // Step: Processing animation
+  if (step === STEP_PROCESSING) {
+    return (
+      <div style={s.container}>
+        <div style={{ ...s.content, justifyContent: "center", minHeight: "60vh" }}>
+          <div style={s.processingIcon}>
+            <svg width="80" height="80" viewBox="0 0 80 80">
+              <circle cx="40" cy="40" r="36" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="3" />
+              <circle cx="40" cy="40" r="36" fill="none" stroke="#fff" strokeWidth="3"
+                strokeDasharray="180" strokeDashoffset="60" strokeLinecap="round">
+                <animateTransform attributeName="transform" type="rotate" from="0 40 40" to="360 40 40" dur="1s" repeatCount="indefinite" />
+              </circle>
+            </svg>
+          </div>
+          <h2 style={{ color: "#fff", fontSize: 22, fontWeight: 700, marginTop: 24 }}>Création du compte...</h2>
+          <p style={{ color: "rgba(255,255,255,0.6)", fontSize: 14, marginTop: 8 }}>Configuration de Face ID</p>
+        </div>
+      </div>
+    );
+  }
 
-        <div style={styles.header}>
-          <h1 style={{ ...styles.title, fontSize: 28 }}>
-            {isRegister ? "Créer un compte" : "Se connecter"}
-          </h1>
-          <p style={styles.subtitle}>Avec votre email et code PIN</p>
+  // Step: Main form (login / register)
+  return (
+    <div style={s.container}>
+      <div style={s.content}>
+        {/* Logo */}
+        <div style={s.header}>
+          <svg width="68" height="68" viewBox="0 0 68 68">
+            <defs>
+              <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor="rgba(255,255,255,0.25)" />
+                <stop offset="100%" stopColor="rgba(255,255,255,0.08)" />
+              </linearGradient>
+            </defs>
+            <circle cx="34" cy="34" r="32" fill="url(#lg)" stroke="rgba(255,255,255,0.2)" strokeWidth="1"/>
+            <text x="34" y="44" textAnchor="middle" fill="#fff" fontSize="30" fontWeight="800" fontFamily="system-ui">K</text>
+          </svg>
+          <h1 style={s.title}>Kingest</h1>
+          <p style={s.subtitle}>Investissement intelligent</p>
         </div>
 
-        <div style={styles.formCard}>
-          {/* Email */}
-          <div style={styles.inputGroup}>
-            <label style={styles.label}>Email</label>
-            <input
-              type="email"
-              placeholder="votre@email.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              style={styles.input}
-              autoCapitalize="none"
-              autoComplete="email"
-            />
+        {/* Form */}
+        <div style={s.card}>
+          <div style={s.toggleRow}>
+            <button style={{ ...s.toggle, ...(isRegister ? {} : s.toggleOn) }} onClick={() => { setIsRegister(false); setError(""); setStep(STEP_FORM); }}>
+              Connexion
+            </button>
+            <button style={{ ...s.toggle, ...(isRegister ? s.toggleOn : {}) }} onClick={() => { setIsRegister(true); setError(""); }}>
+              Inscription
+            </button>
           </div>
 
-          {/* PIN */}
-          <div style={styles.inputGroup}>
-            <label style={styles.label}>Code PIN (4-6 chiffres)</label>
-            <input
-              type="password"
-              placeholder="••••"
-              value={pin}
-              onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
-              style={styles.input}
-              inputMode="numeric"
-              maxLength={6}
-            />
-          </div>
+          <label style={s.label}>Email</label>
+          <input type="email" placeholder="votre@email.com" value={email}
+            onChange={e => setEmail(e.target.value)} style={s.input}
+            autoCapitalize="none" autoComplete="email" />
 
-          {/* Confirm PIN */}
+          <label style={s.label}>Code PIN (6 chiffres)</label>
+          <input type="password" placeholder="••••••" value={pin}
+            onChange={e => setPin(e.target.value.replace(/\D/g,"").slice(0,6))} style={s.input}
+            inputMode="numeric" maxLength={6} />
+
           {isRegister && (
-            <div style={styles.inputGroup}>
-              <label style={styles.label}>Confirmer le PIN</label>
-              <input
-                type="password"
-                placeholder="••••"
-                value={confirmPin}
-                onChange={(e) => setConfirmPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                style={styles.input}
-                inputMode="numeric"
-                maxLength={6}
-              />
-            </div>
+            <>
+              <label style={s.label}>Confirmer le PIN</label>
+              <input type="password" placeholder="••••••" value={confirmPin}
+                onChange={e => setConfirmPin(e.target.value.replace(/\D/g,"").slice(0,6))} style={s.input}
+                inputMode="numeric" maxLength={6} />
+            </>
           )}
 
-          {error && <div style={styles.error}>{error}</div>}
+          {error && <div style={s.error}>{error}</div>}
 
-          <button
-            style={{ ...styles.submitBtn, opacity: loading ? 0.6 : 1 }}
-            onClick={handleEmailAuth}
-            disabled={loading}
-          >
-            {loading ? "Connexion..." : isRegister ? "Créer mon compte" : "Se connecter"}
+          <button style={{ ...s.btn, opacity: loading ? 0.6 : 1 }} onClick={handleFormSubmit} disabled={loading}>
+            {loading ? "Connexion..." : isRegister ? "Suivant — Selfie" : "Se connecter"}
           </button>
 
-          <button
-            style={styles.switchBtn}
-            onClick={() => { setIsRegister(!isRegister); setError(""); }}
-          >
-            {isRegister ? "Déjà un compte ? Se connecter" : "Pas de compte ? Créer un compte"}
-          </button>
+          {isRegister && (
+            <p style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", textAlign: "center", marginTop: 12 }}>
+              Un selfie sera demandé pour activer Face ID
+            </p>
+          )}
         </div>
 
-        <div style={styles.serverStatus}>
-          <div style={{ ...styles.statusDot, background: serverReady ? "#4CAF50" : "#FF9500" }} />
-          <span style={styles.statusLabel}>{serverReady ? "Connecté" : "Connexion..."}</span>
+        <div style={s.status}>
+          <div style={{ width:6, height:6, borderRadius:"50%", background: serverReady ? "#4CAF50" : "#FF9500", transition:"background 0.3s" }} />
+          <span style={{ fontSize:11, color:"rgba(255,255,255,0.4)" }}>{serverReady ? "Serveur connecté" : "Connexion au serveur..."}</span>
         </div>
+
+        <p style={s.footer}>En continuant, vous acceptez nos conditions d'utilisation</p>
       </div>
     </div>
   );
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  Styles — Gradient Gestia style
-// ═══════════════════════════════════════════════════════════════
-const styles = {
+const s = {
   container: {
-    position: "fixed", inset: 0,
-    background: "linear-gradient(165deg, #667eea 0%, #764ba2 100%)",
-    display: "flex", alignItems: "center", justifyContent: "center",
-    fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif",
-    overflow: "auto",
+    position:"fixed", inset:0,
+    background:"linear-gradient(165deg, #667eea 0%, #764ba2 100%)",
+    display:"flex", alignItems:"center", justifyContent:"center",
+    fontFamily:"-apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif",
+    overflow:"auto",
   },
   content: {
-    width: "100%", maxWidth: 380,
-    padding: "60px 32px 40px",
-    display: "flex", flexDirection: "column", alignItems: "center",
+    width:"100%", maxWidth:380, padding:"60px 28px 40px",
+    display:"flex", flexDirection:"column", alignItems:"center",
   },
-  header: {
-    textAlign: "center", marginBottom: 48,
+  header: { textAlign:"center", marginBottom:40 },
+  title: { fontSize:38, fontWeight:800, color:"#fff", margin:"12px 0 0", letterSpacing:"-1px" },
+  subtitle: { fontSize:16, color:"rgba(255,255,255,0.8)", margin:"4px 0 0", fontWeight:500 },
+  card: {
+    width:"100%", background:"rgba(255,255,255,0.1)", borderRadius:20,
+    padding:"24px 20px", border:"1px solid rgba(255,255,255,0.15)",
+    backdropFilter:"blur(20px)",
   },
-  logoCircle: {
-    marginBottom: 16,
+  toggleRow: {
+    display:"flex", gap:4, background:"rgba(255,255,255,0.08)",
+    borderRadius:12, padding:3, marginBottom:20,
   },
-  title: {
-    fontSize: 42, fontWeight: "800", color: "#fff",
-    margin: 0, letterSpacing: "-1px",
+  toggle: {
+    flex:1, padding:"10px 0", border:"none", borderRadius:10,
+    background:"transparent", color:"rgba(255,255,255,0.5)",
+    fontSize:14, fontWeight:600, cursor:"pointer", fontFamily:"inherit",
   },
-  subtitle: {
-    fontSize: 17, color: "rgba(255,255,255,0.85)",
-    margin: "6px 0 0", fontWeight: 500,
-  },
-  buttonContainer: {
-    width: "100%",
-    display: "flex", flexDirection: "column", gap: 14,
-  },
-  appleBtn: {
-    display: "flex", alignItems: "center", justifyContent: "center", gap: 12,
-    width: "100%", padding: "16px 24px",
-    background: "#000", border: "none", borderRadius: 14,
-    color: "#fff", fontSize: 16, fontWeight: 600,
-    cursor: "pointer", fontFamily: "inherit",
-  },
-  googleBtn: {
-    display: "flex", alignItems: "center", justifyContent: "center", gap: 12,
-    width: "100%", padding: "16px 24px",
-    background: "#DB4437", border: "none", borderRadius: 14,
-    color: "#fff", fontSize: 16, fontWeight: 600,
-    cursor: "pointer", fontFamily: "inherit",
-  },
-  emailBtn: {
-    display: "flex", alignItems: "center", justifyContent: "center", gap: 12,
-    width: "100%", padding: "16px 24px",
-    background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.25)",
-    borderRadius: 14, color: "#fff", fontSize: 16, fontWeight: 600,
-    cursor: "pointer", fontFamily: "inherit",
-    backdropFilter: "blur(10px)",
-  },
-  divider: {
-    display: "flex", alignItems: "center", gap: 16,
-    margin: "4px 0",
-  },
-  dividerLine: {
-    flex: 1, height: 1,
-    background: "rgba(255,255,255,0.2)",
-  },
-  dividerText: {
-    color: "rgba(255,255,255,0.6)", fontSize: 13, fontWeight: 500,
-  },
-  backBtn: {
-    alignSelf: "flex-start",
-    background: "none", border: "none",
-    color: "rgba(255,255,255,0.8)", fontSize: 16,
-    cursor: "pointer", fontFamily: "inherit",
-    marginBottom: 16, padding: 0, fontWeight: 500,
-  },
-  formCard: {
-    width: "100%",
-    background: "rgba(255,255,255,0.1)",
-    borderRadius: 20, padding: "24px 20px",
-    border: "1px solid rgba(255,255,255,0.15)",
-    backdropFilter: "blur(20px)",
-  },
-  inputGroup: {
-    marginBottom: 16,
-  },
+  toggleOn: { background:"rgba(255,255,255,0.15)", color:"#fff" },
   label: {
-    display: "block", fontSize: 13, fontWeight: 600,
-    color: "rgba(255,255,255,0.7)", marginBottom: 6,
+    display:"block", fontSize:13, fontWeight:600,
+    color:"rgba(255,255,255,0.7)", margin:"12px 0 6px",
   },
   input: {
-    width: "100%", padding: "14px 16px",
-    background: "rgba(255,255,255,0.12)",
-    border: "1px solid rgba(255,255,255,0.2)",
-    borderRadius: 12, fontSize: 16, color: "#fff",
-    outline: "none", boxSizing: "border-box",
-    fontFamily: "inherit",
+    width:"100%", padding:"14px 16px",
+    background:"rgba(255,255,255,0.12)", border:"1px solid rgba(255,255,255,0.2)",
+    borderRadius:12, fontSize:16, color:"#fff",
+    outline:"none", boxSizing:"border-box", fontFamily:"inherit",
   },
   error: {
-    background: "rgba(255,80,80,0.2)",
-    border: "1px solid rgba(255,80,80,0.3)",
-    borderRadius: 10, padding: "10px 14px",
-    color: "#fff", fontSize: 13, fontWeight: 500,
-    marginBottom: 16, textAlign: "center",
+    background:"rgba(255,80,80,0.2)", border:"1px solid rgba(255,80,80,0.3)",
+    borderRadius:10, padding:"10px 14px", color:"#fff",
+    fontSize:13, fontWeight:500, margin:"14px 0 0", textAlign:"center",
   },
-  submitBtn: {
-    width: "100%", padding: "16px 0",
-    background: "rgba(255,255,255,0.2)",
-    border: "1px solid rgba(255,255,255,0.3)",
-    borderRadius: 14, color: "#fff", fontSize: 17, fontWeight: 700,
+  btn: {
+    width:"100%", padding:"16px 0", marginTop:20,
+    background:"rgba(255,255,255,0.2)", border:"1px solid rgba(255,255,255,0.3)",
+    borderRadius:14, color:"#fff", fontSize:17, fontWeight:700,
+    cursor:"pointer", fontFamily:"inherit",
+  },
+  backBtn: {
+    marginTop: 20, background: "none", border: "none",
+    color: "rgba(255,255,255,0.6)", fontSize: 15, fontWeight: 600,
     cursor: "pointer", fontFamily: "inherit",
-    transition: "opacity 0.2s",
   },
-  switchBtn: {
-    width: "100%", padding: "12px 0",
-    background: "none", border: "none",
-    color: "rgba(255,255,255,0.7)", fontSize: 14,
-    cursor: "pointer", fontFamily: "inherit",
-    marginTop: 8,
+  status: {
+    display:"flex", alignItems:"center", justifyContent:"center",
+    gap:6, marginTop:24,
   },
-  spinnerWhite: {
-    display: "inline-block",
+  footer: { marginTop:20, fontSize:12, color:"rgba(255,255,255,0.4)", textAlign:"center" },
+  // Selfie styles
+  selfieCard: {
+    width:"100%", background:"rgba(255,255,255,0.1)", borderRadius:20,
+    padding:"20px", border:"1px solid rgba(255,255,255,0.15)",
+    backdropFilter:"blur(20px)",
   },
-  footer: {
-    marginTop: 32, fontSize: 12,
-    color: "rgba(255,255,255,0.5)", textAlign: "center",
+  selfieFrame: {
+    width:"100%", aspectRatio:"1/1", borderRadius:20, overflow:"hidden",
+    position:"relative", background:"#000",
   },
-  serverStatus: {
-    display: "flex", alignItems: "center", justifyContent: "center",
-    gap: 6, marginTop: 20,
+  video: {
+    width:"100%", height:"100%", objectFit:"cover",
+    transform:"scaleX(-1)", // Mirror front camera
   },
-  statusDot: {
-    width: 6, height: 6, borderRadius: "50%",
-    transition: "background 0.3s",
+  selfieOverlay: {
+    position:"absolute", inset:0, pointerEvents:"none",
   },
-  statusLabel: {
-    fontSize: 11, color: "rgba(255,255,255,0.4)", fontWeight: 500,
+  selfieImg: {
+    width:"100%", height:"100%", objectFit:"cover", borderRadius:0,
+  },
+  processingIcon: {
+    display:"flex", alignItems:"center", justifyContent:"center",
   },
 };
