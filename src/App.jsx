@@ -15,6 +15,7 @@ import { ExchangePage } from "./pages/ExchangePage";
 import { Settings } from "./pages/Settings";
 import { LoginPage } from "./pages/LoginPage";
 import { API_BASE } from "./config";
+import { useTrading } from "./hooks/useTrading";
 
 // ── Nav items ──
 const NAV = [
@@ -96,6 +97,9 @@ export default function App() {
     // Real market data ONLY — no simulation
     const { stocks, cryptos, forex, comms, indices, exchanges, isLive, lastUpdate, error: marketError, debug: marketDebug, loading } = useRealMarket();
 
+    // Real trading via Alpaca
+    const trading = useTrading();
+
     const DATA = { stocks, cryptos, forex, comms, indices };
 
     // ── Persistence helpers ──
@@ -141,32 +145,73 @@ export default function App() {
         setTimeout(() => setToasts(p => p.filter(x => x.id !== id)), 4000);
     }, []);
 
-    // ── Trade execution ──
-    const executeTrade = useCallback((trade) => {
+    // ── Trade execution (REAL via Alpaca API) ──
+    const executeTrade = useCallback(async (trade) => {
         if (trade.amount > walletBalances.USD) { toast("Solde insuffisant", "error"); return; }
-        setWalletBalances(wb => ({ ...wb, USD: wb.USD - trade.amount }));
-        const liqPrice = trade.leverage > 1
-            ? (trade.side === "long"
-                ? trade.price * (1 - 0.9 / trade.leverage)
-                : trade.price * (1 + 0.9 / trade.leverage))
-            : null;
-        setPositions(p => [...p, {
-            id: Date.now(), sym: trade.asset.sym, name: trade.asset.name,
-            color: trade.asset.color || C.primary, logo: trade.asset.logo,
-            emoji: trade.asset.emoji,
-            mode: trade.mode, side: trade.mode === "short" ? "short" : "long",
-            amount: trade.amount, leverage: trade.leverage,
-            entryPrice: trade.price, units: trade.amount * trade.leverage / trade.price,
-            liquidation: liqPrice, type: trade.type || "stock",
-            stopLoss: trade.stopLoss || null, takeProfit: trade.takeProfit || null,
-            time: new Date().toISOString(),
-        }]);
+
         const label = trade.mode === "spot" ? "BUY" : trade.mode === "long" ? "LONG" : "SHORT";
-        toast(`${label} ${trade.asset.sym} — ${fUSD(trade.amount)} ×${trade.leverage}`);
-        addTransaction({ type: "trade", amount: trade.amount, currency: "USD", method: label, desc: `${label} ${trade.asset.sym}` });
+        const sym = trade.asset.sym;
+        const assetType = trade.type || (sym.includes("/") ? "crypto" : "stock");
+
+        // For spot buys, execute real order via Alpaca
+        if (trade.mode === "spot") {
+            toast(`Exécution ${label} ${sym}...`, "success");
+            try {
+                const result = await trading.buy({
+                    symbol: sym,
+                    amount: trade.amount, // Buy by dollar amount (notional)
+                    type: assetType,
+                });
+                // Real order placed!
+                setWalletBalances(wb => ({ ...wb, USD: wb.USD - trade.amount }));
+                setPositions(p => [...p, {
+                    id: Date.now(), sym, name: trade.asset.name,
+                    color: trade.asset.color || C.primary, logo: trade.asset.logo,
+                    emoji: trade.asset.emoji,
+                    mode: "spot", side: "long",
+                    amount: trade.amount, leverage: 1,
+                    entryPrice: trade.price, units: trade.amount / trade.price,
+                    liquidation: null, type: assetType,
+                    stopLoss: null, takeProfit: null,
+                    time: new Date().toISOString(),
+                    alpacaOrderId: result.order?.orderId,
+                    real: true, // Mark as real Alpaca order
+                }]);
+                toast(`✓ ${label} ${sym} — ${fUSD(trade.amount)} (fee: $${result.kingestFee})`);
+                addTransaction({ type: "trade", amount: trade.amount, currency: "USD", method: label, desc: `${label} ${sym} (Alpaca)` });
+                // Refresh portfolio from Alpaca
+                trading.fetchPortfolio(true);
+            } catch (e) {
+                toast(`Erreur: ${e.message}`, "error");
+                return; // Don't navigate away on error
+            }
+        } else {
+            // Long/Short with leverage — local simulation (Alpaca doesn't support leverage)
+            setWalletBalances(wb => ({ ...wb, USD: wb.USD - trade.amount }));
+            const liqPrice = trade.leverage > 1
+                ? (trade.side === "long"
+                    ? trade.price * (1 - 0.9 / trade.leverage)
+                    : trade.price * (1 + 0.9 / trade.leverage))
+                : null;
+            setPositions(p => [...p, {
+                id: Date.now(), sym, name: trade.asset.name,
+                color: trade.asset.color || C.primary, logo: trade.asset.logo,
+                emoji: trade.asset.emoji,
+                mode: trade.mode, side: trade.mode === "short" ? "short" : "long",
+                amount: trade.amount, leverage: trade.leverage,
+                entryPrice: trade.price, units: trade.amount * trade.leverage / trade.price,
+                liquidation: liqPrice, type: assetType,
+                stopLoss: trade.stopLoss || null, takeProfit: trade.takeProfit || null,
+                time: new Date().toISOString(),
+                real: false, // Simulated leverage
+            }]);
+            toast(`${label} ${sym} — ${fUSD(trade.amount)} ×${trade.leverage}`);
+            addTransaction({ type: "trade", amount: trade.amount, currency: "USD", method: label, desc: `${label} ${sym}` });
+        }
+
         setOrderConfig(null);
         setPage("portfolio");
-    }, [walletBalances, toast, addTransaction]);
+    }, [walletBalances, toast, addTransaction, trading]);
 
     // ── P&L calculation ──
     const allAssets = useMemo(() => [...stocks, ...cryptos, ...forex, ...comms, ...indices], [stocks, cryptos, forex, comms, indices]);
@@ -178,19 +223,39 @@ export default function App() {
         return ((pos.entryPrice - cur) / pos.entryPrice) * pos.amount * pos.leverage;
     }, [allAssets]);
 
-    // ── Close position ──
-    const closePosition = useCallback((id) => {
-        setPositions(p => {
-            const pos = p.find(x => x.id === id);
-            if (pos) {
-                const pnl = getPnl(pos);
+    // ── Close position (REAL sell via Alpaca for real positions) ──
+    const closePosition = useCallback(async (id) => {
+        const pos = positions.find(x => x.id === id);
+        if (!pos) return;
+
+        const pnl = getPnl(pos);
+
+        // If it's a real Alpaca position, sell via API
+        if (pos.real && pos.mode === "spot") {
+            toast(`Vente ${pos.sym}...`, "success");
+            try {
+                const assetType = pos.type || "stock";
+                await trading.sell({
+                    symbol: pos.sym,
+                    qty: pos.units,
+                    type: assetType,
+                });
                 setWalletBalances(wb => ({ ...wb, USD: wb.USD + pos.amount + pnl }));
-                addTransaction({ type: "close", amount: pos.amount + pnl, currency: "USD", method: "Close", desc: `Close ${pos.sym}` });
-                toast(`${pos.sym} fermé — P&L: ${pnl >= 0 ? "+" : ""}${fUSD(pnl)}`);
+                setPositions(p => p.filter(x => x.id !== id));
+                addTransaction({ type: "close", amount: pos.amount + pnl, currency: "USD", method: "Sell", desc: `Sell ${pos.sym} (Alpaca)` });
+                toast(`✓ ${pos.sym} vendu — P&L: ${pnl >= 0 ? "+" : ""}${fUSD(pnl)}`);
+                trading.fetchPortfolio(true);
+            } catch (e) {
+                toast(`Erreur vente: ${e.message}`, "error");
             }
-            return p.filter(x => x.id !== id);
-        });
-    }, [getPnl, toast, addTransaction]);
+        } else {
+            // Simulated position — close locally
+            setWalletBalances(wb => ({ ...wb, USD: wb.USD + pos.amount + pnl }));
+            setPositions(p => p.filter(x => x.id !== id));
+            addTransaction({ type: "close", amount: pos.amount + pnl, currency: "USD", method: "Close", desc: `Close ${pos.sym}` });
+            toast(`${pos.sym} fermé — P&L: ${pnl >= 0 ? "+" : ""}${fUSD(pnl)}`);
+        }
+    }, [positions, getPnl, toast, addTransaction, trading]);
 
     // ── Portfolio metrics ──
     const metrics = useMemo(() => {
@@ -314,6 +379,7 @@ export default function App() {
                         positions={positions} allAssets={allAssets} balance={balance}
                         metrics={metrics} getPnl={getPnl} onClose={closePosition}
                         onOpenAsset={openAsset}
+                        trading={trading}
                     />
                 )}
                 {page === "strategies" && (

@@ -34,6 +34,7 @@ function OrderTicket({ asset, mode: initialMode, balance, usedMargin, onExecute,
     const [leverage, setLeverage] = useState(mode === "spot" ? 1 : 2);
     const [stopLoss, setStopLoss] = useState("");
     const [takeProfit, setTakeProfit] = useState("");
+    const [submitting, setSubmitting] = useState(false);
 
     const amt = parseFloat(amount) || 0;
     const sl = parseFloat(stopLoss) || 0;
@@ -44,7 +45,7 @@ function OrderTicket({ asset, mode: initialMode, balance, usedMargin, onExecute,
         const marginReq = amt;
         const totalUsedMargin = usedMargin + marginReq;
         const freeMargin = balance - marginReq;
-        const fees = posSize * 0.001; // 0.1% fee
+        const fees = posSize * 0.002; // 0.2% Kingest spread
         const liqPrice = leverage > 1
             ? (mode === "short"
                 ? asset.price * (1 + 0.9 / leverage)
@@ -64,12 +65,20 @@ function OrderTicket({ asset, mode: initialMode, balance, usedMargin, onExecute,
         else if (leverage === 1) setLeverage(2);
     };
 
-    const submit = () => {
-        onExecute({
-            asset, mode, side: mode === "short" ? "short" : "long",
-            amount: amt, leverage, price: asset.price,
-            stopLoss: sl || null, takeProfit: tp || null,
-        });
+    const submit = async () => {
+        if (submitting) return;
+        setSubmitting(true);
+        try {
+            await onExecute({
+                asset, mode, side: mode === "short" ? "short" : "long",
+                amount: amt, leverage, price: asset.price,
+                stopLoss: sl || null, takeProfit: tp || null,
+            });
+        } catch (e) {
+            // Error handled by parent
+        } finally {
+            setSubmitting(false);
+        }
     };
 
     const isUp = asset.chg >= 0;
@@ -156,7 +165,7 @@ function OrderTicket({ asset, mode: initialMode, balance, usedMargin, onExecute,
                 <MetricRow label="Margin Required" value={fUSD(calc.marginReq)} />
                 <MetricRow label="Used Margin (total)" value={fUSD(calc.totalUsedMargin)} />
                 <MetricRow label="Free Margin (after)" value={fUSD(Math.max(0, calc.freeMargin))} color={calc.freeMargin < 0 ? C.red : C.green} />
-                <MetricRow label="Est. Fees (0.1%)" value={fUSD(calc.fees)} />
+                <MetricRow label="Est. Fees (0.2%)" value={fUSD(calc.fees)} />
                 {calc.liqPrice && <MetricRow label="Est. Liquidation" value={"$" + fmt(calc.liqPrice)} color={C.red} bold />}
                 <MetricRow label="Est. Max Loss" value={fUSD(calc.maxLoss)} color={C.red} />
                 <div style={{ marginTop: "8px" }}>
@@ -165,18 +174,32 @@ function OrderTicket({ asset, mode: initialMode, balance, usedMargin, onExecute,
                 </div>
             </div>
 
+            {/* Real Trade Indicator */}
+            {isSpot && amt > 0 && (
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px", padding: "10px 14px", background: "rgba(38,166,154,0.06)", borderRadius: "10px", border: "1px solid rgba(38,166,154,0.15)" }}>
+                    <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: C.green, animation: "pulse 2s infinite" }} />
+                    <span style={{ fontSize: "11px", fontWeight: 700, color: C.green }}>Ordre réel — Alpaca Paper Trading</span>
+                </div>
+            )}
+            {!isSpot && amt > 0 && (
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px", padding: "10px 14px", background: "rgba(255,165,0,0.06)", borderRadius: "10px", border: "1px solid rgba(255,165,0,0.15)" }}>
+                    <span style={{ fontSize: "11px", fontWeight: 700, color: "#F5A623" }}>Simulation — Levier non supporté par broker</span>
+                </div>
+            )}
+
             {/* Submit */}
-            <button onClick={submit} disabled={!canSubmit} style={{
+            <button onClick={submit} disabled={!canSubmit || submitting} style={{
                 width: "100%", padding: "16px", borderRadius: "12px", fontSize: "16px", fontWeight: 800,
-                background: !canSubmit ? "rgba(255,255,255,0.05)"
+                background: (!canSubmit || submitting) ? "rgba(255,255,255,0.05)"
                     : mode === "short" ? "linear-gradient(135deg, #EF5350, #E53935)"
                     : "linear-gradient(135deg, #26A69A, #2BBD8E)",
-                color: !canSubmit ? C.textDim : "#fff",
-                opacity: canSubmit ? 1 : 0.5,
+                color: (!canSubmit || submitting) ? C.textDim : "#fff",
+                opacity: (canSubmit && !submitting) ? 1 : 0.5,
                 letterSpacing: "0.02em"
             }}>
-                {mode === "spot" ? `Buy ${asset.sym}` : mode === "long" ? `Open Long ×${leverage}` : `Open Short ×${leverage}`}
-                {amt > 0 ? ` — ${fUSD(amt)}` : ""}
+                {submitting ? "Exécution en cours..." :
+                    mode === "spot" ? `Buy ${asset.sym}` : mode === "long" ? `Open Long ×${leverage}` : `Open Short ×${leverage}`}
+                {!submitting && amt > 0 ? ` — ${fUSD(amt)}` : ""}
             </button>
         </div>
     );
