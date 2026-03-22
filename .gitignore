@@ -16,3 +16,4 @@ dist-ios/
 *.bak2
 *.pyc
 
+build/
