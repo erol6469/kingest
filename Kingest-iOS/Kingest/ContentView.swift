@@ -93,13 +93,7 @@ struct WebView: UIViewRepresentable {
         }
         weak var webView: WKWebView?
         var timer: Timer?
-        let apiBase: String = { 
-            #if DEBUG 
-            return "http://192.168.1.58:3001" 
-            #else 
-            return "https://kingest-api.onrender.com" 
-            #endif 
-        }()
+        let apiBase: String = "https://kingest-api.onrender.com"
         var paymentController: PKPaymentAuthorizationController?
 
         @objc func handleRefresh(_ sender: UIRefreshControl) {

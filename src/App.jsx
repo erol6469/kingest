@@ -13,6 +13,8 @@ import { CollectPage } from "./pages/CollectPage";
 import { SendPage } from "./pages/SendPage";
 import { ExchangePage } from "./pages/ExchangePage";
 import { Settings } from "./pages/Settings";
+import { LoginPage } from "./pages/LoginPage";
+import { API_BASE } from "./config";
 
 // ── Nav items ──
 const NAV = [
@@ -30,6 +32,34 @@ const TABS = {
 };
 
 export default function App() {
+    // ── Auth state ──
+    const [authToken, setAuthToken] = useState(() => {
+        try { return localStorage.getItem("kingest_auth_token") || null; } catch { return null; }
+    });
+    const [userEmail, setUserEmail] = useState(() => {
+        try { return localStorage.getItem("kingest_user_email") || ""; } catch { return ""; }
+    });
+
+    const handleAuth = (token, email) => {
+        setAuthToken(token);
+        setUserEmail(email);
+    };
+
+    const handleLogout = () => {
+        setAuthToken(null);
+        setUserEmail("");
+        try {
+            localStorage.removeItem("kingest_auth_token");
+            localStorage.removeItem("kingest_user_email");
+            localStorage.removeItem("kingest_user_id");
+        } catch {}
+    };
+
+    // ── Show login if not authenticated ──
+    if (!authToken) {
+        return <LoginPage onAuth={handleAuth} />;
+    }
+
     // Real market data ONLY — no simulation
     const { stocks, cryptos, forex, comms, indices, exchanges, isLive, lastUpdate, error: marketError, debug: marketDebug, loading } = useRealMarket(30000);
 
