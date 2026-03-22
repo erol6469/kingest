@@ -3,28 +3,22 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
+  base: './',
   build: {
     outDir: 'dist',
     sourcemap: false,
+    cssCodeSplit: false,
+    rollupOptions: {
+      output: {
+        // Single chunk — no code splitting for WKWebView compatibility
+        manualChunks: undefined,
+        inlineDynamicImports: true,
+        // Use IIFE format for WKWebView (no ES modules on file://)
+        format: 'iife',
+      },
+    },
   },
   server: {
     port: 3000,
-    proxy: {
-      '/api/finnhub': {
-        target: 'https://finnhub.io/api/v1',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api\/finnhub/, ''),
-      },
-      '/api/coingecko': {
-        target: 'https://api.coingecko.com/api/v3',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api\/coingecko/, ''),
-      },
-      '/api/goldapi': {
-        target: 'https://api.gold-api.com',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api\/goldapi/, ''),
-      },
-    },
   },
 });

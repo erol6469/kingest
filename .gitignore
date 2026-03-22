@@ -3,4 +3,16 @@ dist/
 .DS_Store
 *.log
 .env
-.env.local
+~$*
+*.xcuserstate
+REFACTORING_COMPLETE.md
+REFACTORING_SUMMARY.md
+*.backup
+
+# Build artifacts
+Kingest-iOS/build/
+dist-ios/
+*.bak
+*.bak2
+*.pyc
+
