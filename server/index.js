@@ -23,6 +23,7 @@ const { authMiddleware, optionalAuth, createToken, hashPin, verifyPin } = requir
 const { PersistentMap, PersistentArray } = require("./persistence");
 const { logger, requestLogger } = require("./logger");
 const { verifyTransaction, getBalance, EXPLORERS } = require("./crypto-service");
+const db = require("./supabase-service");
 
 const app = express();
 
@@ -93,43 +94,93 @@ app.use("/api/stripe/webhook", express.raw({ type: "application/json" }));
 app.use(generalLimiter);
 
 // ══════════════════════════════════════
-// AUTH ENDPOINTS (persistent users on disk)
+// AUTH ENDPOINTS (Supabase persistent DB + in-memory fallback)
 // ══════════════════════════════════════
-const users = new PersistentMap("users.json");
-console.log(`✅ ${users.keys().length} users loaded from disk`);
+const usersMemory = new PersistentMap("users.json");
 
-app.post("/api/v1/auth/register", paymentLimiter, (req, res) => {
+// Init Supabase on startup
+(async () => {
+    if (db.isConfigured()) {
+        const ok = await db.initDatabase();
+        if (ok) {
+            const count = await db.countUsers();
+            console.log(`✅ Supabase connected — ${count} users in database`);
+        }
+    } else {
+        console.log(`⚠️  Supabase not configured — using in-memory storage (${usersMemory.keys().length} users)`);
+    }
+})();
+
+app.post("/api/v1/auth/register", paymentLimiter, async (req, res) => {
     try {
         const { email, pin } = req.body;
         if (!email || !pin) return res.status(400).json({ ok: false, error: "Email and PIN required" });
         const pinStr = pin.toString();
         if (pinStr.length !== 6 || !/^\d{6}$/.test(pinStr)) return res.status(400).json({ ok: false, error: "PIN must be exactly 6 digits" });
         const emailClean = sanitizeString(email, 100).toLowerCase();
-        if (users.has(emailClean)) return res.status(409).json({ ok: false, error: "User exists" });
+
+        // Check if user exists (Supabase first, then memory)
+        if (db.isConfigured()) {
+            if (await db.userExists(emailClean)) return res.status(409).json({ ok: false, error: "User exists" });
+        } else if (usersMemory.has(emailClean)) {
+            return res.status(409).json({ ok: false, error: "User exists" });
+        }
+
         const { hash, salt } = hashPin(pinStr);
         const userId = require("uuid").v4();
-        users.set_val(emailClean, { id: userId, email: emailClean, pinHash: hash, pinSalt: salt, createdAt: new Date().toISOString() });
+
+        // Save to Supabase (persistent) AND memory (fast cache)
+        if (db.isConfigured()) {
+            const created = await db.createUser({ id: userId, email: emailClean, pinHash: hash, pinSalt: salt });
+            if (!created) return res.status(500).json({ ok: false, error: "Database error" });
+        }
+        usersMemory.set_val(emailClean, { id: userId, email: emailClean, pinHash: hash, pinSalt: salt, createdAt: new Date().toISOString() });
+
         const token = createToken({ sub: userId, email: emailClean });
-        logger.info(`[AUTH] New user registered: ${emailClean}`);
+        logger.info(`[AUTH] New user registered: ${emailClean} (supabase: ${db.isConfigured()})`);
         res.json({ ok: true, token, userId });
-    } catch (e) { res.status(500).json({ ok: false, error: "Registration failed" }); }
+    } catch (e) {
+        logger.error(`[AUTH] Register error: ${e.message}`);
+        res.status(500).json({ ok: false, error: "Registration failed" });
+    }
 });
 
-app.post("/api/v1/auth/login", paymentLimiter, (req, res) => {
+app.post("/api/v1/auth/login", paymentLimiter, async (req, res) => {
     try {
         const { email, pin } = req.body;
         if (!email || !pin) return res.status(400).json({ ok: false, error: "Email and PIN required" });
         const pinStr = pin.toString();
         if (pinStr.length !== 6 || !/^\d{6}$/.test(pinStr)) return res.status(400).json({ ok: false, error: "PIN must be exactly 6 digits" });
         const emailClean = sanitizeString(email, 100).toLowerCase();
-        const user = users.get_val(emailClean);
+
+        let user = null;
+
+        // Try Supabase first (always up-to-date), then memory fallback
+        if (db.isConfigured()) {
+            const dbUser = await db.getUser(emailClean);
+            if (dbUser) {
+                user = { id: dbUser.id, pinHash: dbUser.pin_hash, pinSalt: dbUser.pin_salt };
+            }
+        }
+        if (!user) {
+            const memUser = usersMemory.get_val(emailClean);
+            if (memUser) user = { id: memUser.id, pinHash: memUser.pinHash, pinSalt: memUser.pinSalt };
+        }
+
         if (!user || !verifyPin(pinStr, user.pinHash, user.pinSalt)) {
             return res.status(401).json({ ok: false, error: "Invalid credentials" });
         }
+
+        // Update last login in Supabase
+        if (db.isConfigured()) db.updateLastLogin(emailClean);
+
         const token = createToken({ sub: user.id, email: emailClean });
         logger.info(`[AUTH] User logged in: ${emailClean}`);
         res.json({ ok: true, token, userId: user.id });
-    } catch (e) { res.status(500).json({ ok: false, error: "Login failed" }); }
+    } catch (e) {
+        logger.error(`[AUTH] Login error: ${e.message}`);
+        res.status(500).json({ ok: false, error: "Login failed" });
+    }
 });
 
 app.get("/api/v1/auth/verify", authMiddleware, (req, res) => {
